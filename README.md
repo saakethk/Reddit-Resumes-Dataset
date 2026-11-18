@@ -8,4 +8,4 @@ I was attempting to create a resume and found a plethora of research concerning 
 3. Test the deepsift library I developed
 
 ## Results Overview
-
+Initial exploration and the process of finding the relevant subreddits I intend to explore was done using PRAW. 
