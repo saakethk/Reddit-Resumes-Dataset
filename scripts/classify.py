@@ -1,12 +1,13 @@
 """Script to classify a role into the amended SOC classification table."""
 
-from typing import Optional
+import re
+from typing import Literal, Optional
 
 import pandas as pd
 from langchain_core.messages import HumanMessage
 from langchain_ollama import ChatOllama
 from langgraph.graph import END, START, StateGraph
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, create_model
 
 
 class JobState(BaseModel):
@@ -23,22 +24,6 @@ class JobState(BaseModel):
     minor_name: Optional[str] = None
 
 
-class MajorSelection(BaseModel):
-    """Structured output for Major Group selection."""
-
-    major_code: str = Field(
-        description="The exact Major Group code selected, e.g. '13-0000'"
-    )
-
-
-class DetailedSelection(BaseModel):
-    """Structured output for Detailed Occupation selection."""
-
-    detailed_code: str = Field(
-        description="The exact Detailed Occupation code selected, e.g. '13-2011'"
-    )
-
-
 class JobClassifier:
     """Classifies raw job titles into the amended SOC hierarchy."""
 
@@ -46,10 +31,16 @@ class JobClassifier:
         self,
         taxonomy_path: str = "data/sample/amended_soc_structure.csv",
         model: str = "gemma4:e4b-mlx",
+        num_ctx: int = 4096,
+        num_predict: int = 64,
     ) -> None:
-        llm = ChatOllama(model=model, temperature=0.0, format="json")
-        self._major_llm = llm.with_structured_output(MajorSelection)
-        self._detailed_llm = llm.with_structured_output(DetailedSelection)
+        self._llm = ChatOllama(
+            model=model,
+            temperature=0.0,
+            reasoning=False,
+            num_ctx=num_ctx,
+            num_predict=num_predict,
+        )
 
         soc_taxonomy = pd.read_csv(taxonomy_path)
         self._major_map = self._build_name_map(soc_taxonomy, "Major Group")
@@ -58,6 +49,12 @@ class JobClassifier:
         self._major_options = "\n".join(
             f"- {code}: {name}" for code, name in self._major_map.items()
         )
+
+        major_schema = self._make_code_schema(
+            "MajorSelection", "major_code", list(self._major_map.keys())
+        )
+        self._major_llm = self._llm.with_structured_output(major_schema)
+        self._detailed_llm_cache: dict[str, object] = {}
 
         df_hier = soc_taxonomy.copy()
         for col in ("Major Group", "Minor Group", "Broad Group"):
@@ -72,6 +69,36 @@ class JobClassifier:
     def _build_name_map(df: pd.DataFrame, column: str) -> dict[str, str]:
         subset = df[df[column].notna()][[column, "Name"]].dropna()
         return dict(zip(subset[column], subset["Name"]))
+
+    @staticmethod
+    def _make_code_schema(
+        model_name: str, field_name: str, valid_codes: list[str]
+    ) -> type[BaseModel]:
+        code_literal = Literal[tuple(valid_codes)]  # type: ignore[valid-type]
+        return create_model(
+            model_name,
+            **{
+                field_name: (
+                    code_literal,
+                    Field(description="Exact SOC code selected from the list"),
+                )
+            },
+        )
+
+    @staticmethod
+    def _extract_soc_code(raw: str) -> str:
+        match = re.search(r"\b\d{2}-\d{4}\b", raw)
+        return match.group(0) if match else raw.strip()
+
+    def _get_detailed_llm(self, major_code: str, valid_codes: list[str]):
+        if major_code not in self._detailed_llm_cache:
+            schema = self._make_code_schema(
+                "DetailedSelection", "detailed_code", valid_codes
+            )
+            self._detailed_llm_cache[major_code] = (
+                self._llm.with_structured_output(schema)
+            )
+        return self._detailed_llm_cache[major_code]
 
     def _build_workflow(self):
         workflow = StateGraph(JobState)
@@ -90,13 +117,12 @@ class JobClassifier:
         prompt = (
             "You are an official labor classification system.\n"
             f'Role: "{state.raw_role}"\n\n'
-            "Choose the SINGLE best Major Group code from this list:\n"
+            "Choose the SINGLE best Major Group code from this list.\n"
+            "Return ONLY one of the listed SOC codes, without the group name.\n"
             f"{self._major_options}\n"
         )
-        result: MajorSelection = self._major_llm.invoke(
-            [HumanMessage(content=prompt)]
-        )
-        code = result.major_code.strip()
+        result = self._major_llm.invoke([HumanMessage(content=prompt)])
+        code = self._extract_soc_code(result.major_code)
 
         if code not in self._major_map:
             raise ValueError(
@@ -118,27 +144,28 @@ class JobClassifier:
                 f"'{selected_major}'."
             )
 
+        valid_codes = sub_df["Detailed Occupation"].tolist()
         candidates_text = "\n".join(
             f"- {row['Detailed Occupation']}: {row['Name']}"
             for _, row in sub_df.iterrows()
         )
         prompt = (
             f'For the role "{state.raw_role}", choose the single most accurate '
-            f"Detailed Occupation from Major Group {selected_major}:\n"
+            f"Detailed Occupation from Major Group {selected_major}.\n"
+            "Return ONLY one of the listed SOC codes, without the occupation name.\n"
             f"{candidates_text}\n"
         )
-        result: DetailedSelection = self._detailed_llm.invoke(
-            [HumanMessage(content=prompt)]
-        )
+        detailed_llm = self._get_detailed_llm(selected_major, valid_codes)
+        result = detailed_llm.invoke([HumanMessage(content=prompt)])
 
-        det_code = result.detailed_code.strip()
+        det_code = self._extract_soc_code(result.detailed_code)
         match = sub_df[sub_df["Detailed Occupation"] == det_code]
 
         if match.empty:
             raise ValueError(
                 f"LLM returned invalid detailed_code '{det_code}' for Major Group "
                 f"'{selected_major}'.\n"
-                f"Valid options: {sub_df['Detailed Occupation'].tolist()}"
+                f"Valid options: {valid_codes}"
             )
 
         row = match.iloc[0]
