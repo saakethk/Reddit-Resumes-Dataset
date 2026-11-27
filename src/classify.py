@@ -29,7 +29,7 @@ class JobClassifier:
 
     def __init__(
         self,
-        taxonomy_path: str = "data/sample/amended_soc_structure.csv",
+        taxonomy_path: str = "data/reference/amended_soc_structure.csv",
         model: str = "gemma4:e4b-mlx",
         num_ctx: int = 4096,
         num_predict: int = 64,
