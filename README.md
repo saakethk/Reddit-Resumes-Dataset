@@ -1,160 +1,42 @@
-# Curating an Empirical Resume & Peer-Critique Dataset from Reddit
+# Reddit Resume Dataset
 
-**Abstract.** Publicly available datasets pairing real-world resumes with structured career metadata and actionable human critique are scarce due to privacy constraints, proprietary paywalls, and inconsistent formatting. To address this gap, we introduce the **Reddit Resume Dataset**, an empirical corpus of **3,037** standardized resume submissions and **8,101** annotated peer-review comments collected from `r/resumes` between January 1, 2026 and October 31, 2026 using [deepsift](https://github.com/saakethk/deepsift). We detail a reproducible multi-stage curation pipeline combining deterministic regex filtering, rule-based geographic normalization, an amended 2018 Standard Occupational Classification (SOC) taxonomy with a hierarchical LangGraph LLM classifier, and automated comment-relevance labeling.
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![Data: Parquet](https://img.shields.io/badge/data-Parquet-green.svg)](data/final/)
+[![Scraper: deepsift](https://img.shields.io/badge/scraper-deepsift-orange.svg)](https://github.com/saakethk/deepsift)
 
----
+An open, structured dataset of **3,037 resume review submissions** and **8,101 labeled peer-critique comments** curated from Reddit (`r/resumes`, Jan 1 – Oct 31, 2026) using [deepsift](https://github.com/saakethk/deepsift).
 
-## 1. Introduction & Motivation
-
-Research on automated resume evaluation, career-path modeling, and labor-market trends is frequently bottlenecked by the lack of open, structured datasets. Existing corpora typically suffer from one or more limitations: they are proprietary, lack ground-truth human feedback, omit structured applicant context (such as years of experience or target occupation), or are restricted to narrow synthetic templates.
-
-Online peer-review communities—most notably Reddit's `r/resumes` (1,328,408 subscribers at the time of collection)—offer a rich, naturally occurring alternative. Submitters routinely share anonymized resume images alongside standardized title metadata and receive targeted critique from peers and recruiters. This project formalizes that public discourse into a clean, research-ready dataset designed to support:
-
-1. **Resume Evaluation & Feedback Modeling** — Training and benchmarking models that critique resumes or distinguish actionable feedback from general discussion.
-2. **Labor Market & Career-Transition Analysis** — Studying experience distributions, geographic mobility, and current-to-target occupation transitions.
-3. **Scraping & Curation Benchmarking** — Stress-testing the `deepsift` Reddit collection and filtering library.
+![Reddit Resume Dataset Banner](figures/kaggle_thumbnail.png)
 
 ---
 
-## 2. Data Collection & Filtering Methodology
+## Why This Dataset?
 
-### 2.1 Source Selection & Raw Acquisition
-Initial subreddit discovery was conducted using PRAW, identifying `r/resumes` as the highest-volume, most consistently structured public forum for resume critique. Using `deepsift`, we scraped all submissions with at least one comment (`num_comments >= 1`) published between **January 1, 2026 and November 1, 2026**, yielding **20,827** raw posts ([`data/raw/subreddit_resumes_posts.parquet`](data/raw/subreddit_resumes_posts.parquet)).
+Publicly available datasets that pair real-world resumes with structured applicant metadata and actionable human feedback are notoriously hard to find due to privacy concerns, paywalls, and inconsistent formatting. This repository turns public `r/resumes` discussions into a clean, research-ready corpus for:
 
-### 2.2 Multi-Stage Post Filtering Funnel
-Raw Reddit submissions contain deleted posts, text-only questions, and non-standard titles. We applied a deterministic four-stage filtering funnel (implemented in [`src/clean.py`](src/clean.py) and [`notebooks/02_exploring_sample_data.ipynb`](notebooks/02_exploring_sample_data.ipynb)):
-
-| Stage | Criterion | Remaining Posts | Retention |
-| :--- | :--- | ---: | ---: |
-| **0. Raw Scrape** | `r/resumes`, `num_comments >= 1` | 20,827 | 100.0% |
-| **1. Valid Body Text** | Non-empty `selftext`, excluding `[removed]` and `[deleted]` | 9,658 | 46.4% |
-| **2. Resume Image URL** | `url` ending in `.png` or `.jpeg` | 9,215 | 44.2% |
-| **3. Structured Title** | Matches `r/resumes` convention `[X YoE, Current Role, Target Role, Country]` | 8,512 | 40.9% |
-| **4. Parsed & Mapped** | Valid numeric `yoe`, `country` length `< 26`, and non-null SOC/country mappings | **3,037** | **14.6%** |
+- **Resume Evaluation & Critique Modeling** — Training and benchmarking models that generate resume feedback or distinguish actionable advice from general chatter.
+- **Labor Market & Career-Transition Research** — Analyzing experience distributions, geographic mobility, and current-to-target occupation transitions.
+- **Scraping & Curation Benchmarking** — Stress-testing the [deepsift](https://github.com/saakethk/deepsift) Reddit collection and filtering pipeline.
 
 ---
 
-## 3. Normalization & Classification Methodologies
+## Quick Start
 
-### 3.1 Geographic & Work-Mode Normalization
-User-entered location strings (`data/intermediate/countries.csv`, 8,512 entries / 1,408 unique values) exhibit high lexical variance (e.g., `"NYC"`, `"Bay Area"`, `"U.S."`, `"Bengaluru"`, `"Anywhere"`). In [`src/country.py`](src/country.py) (developed in [`notebooks/03_developing_country_classifications.ipynb`](notebooks/03_developing_country_classifications.ipynb)), we apply a deterministic regex hierarchy:
+### Load the Dataset
+```python
+import pandas as pd
 
-1. **Noise Removal**: Filters non-location artifacts (e.g., `"unknown"`, `"seeking feedback"`).
-2. **Work-Mode & Scope Tagging**: Prioritizes explicit work-mode indicators (`Remote`, `Global / Anywhere`, `Hybrid`) and relocation arrows (`A -> B` resolves to `B`).
-3. **Regional & Country Matching**: Maps sub-national cities, states, and abbreviations to canonical country names (e.g., `United States`, `India`, `Canada`, `United Kingdom`) or macro-regions (`Europe / EU`, `APAC`, `LATAM`); unresolved strings are labeled `UNMAPPED`.
+posts = pd.read_parquet("data/final/posts.parquet")
+comments = pd.read_parquet("data/final/comments.parquet")
+soc = pd.read_csv("data/reference/amended_soc_structure.csv")
 
-### 3.2 Occupational Standardization (Amended 2018 SOC + LangGraph Classifier)
-Raw job titles (`current_role` and `target_role`) span **7,784** unique strings. Standardizing these against the official **2018 U.S. BLS Standard Occupational Classification (SOC)** ([`data/reference/soc_structure_2018.xlsx`](data/reference/soc_structure_2018.xlsx)) revealed a structural gap: official labor taxonomies assume active employment and lack codes for non-occupational statuses frequently reported on resumes (e.g., *Unemployed*, *New Grad*, *Enrolled Student*, *Career Break*).
-
-To resolve this, we constructed [`data/reference/amended_soc_structure.csv`](data/reference/amended_soc_structure.csv) by appending Major Group **`99-0000` (*Non-Occupational and Transition Statuses*)** comprising 13 detailed codes (`99-1011` through `99-5011`), including:
-- Employment transitions: `99-1011` (Unemployed), `99-1012` (Laid Off), `99-1021` (Looking for Work), `99-1022` (Career Break / Transition)
-- Academic statuses: `99-2011` (Enrolled Student), `99-2012` (Intern / Co-op), `99-2021` (Recent Graduate)
-- Alternative & open statuses: `99-3011` (Freelancer), `99-3012` (Self Employed / Founder), `99-4011` (Caregiver), `99-4012` (Volunteer), `99-4021` (Retired), `99-5011` (Anything / Undecided)
-
-For classification, [`src/classify.py`](src/classify.py) (`JobClassifier`) implements a 3-node **LangGraph** pipeline backed by **Ollama (`gemma4:e4b-mlx`, temperature `0.0`)** with Pydantic `Literal`-constrained structured outputs:
-1. **`step1_major`**: Classifies the raw role string into a single SOC Major Group.
-2. **`step2_detailed`**: Selects the best Detailed Occupation within the chosen Major Group.
-3. **`step3_lookup`**: Deterministically resolves Minor and Broad Group codes from the taxonomy table.
-
-### 3.3 Comment Extraction & Actionable Advice Filtering
-Using `deepsift`, we retrieved **11,141** non-deleted comments associated with the filtered posts ([`data/raw/subreddit_resumes_comments.parquet`](data/raw/subreddit_resumes_comments.parquet)). After removing automated `AutoModerator` notices, **8,101** comments remained across **1,941** unique posts.
-
-Because many Reddit replies consist of clarifying questions, off-topic remarks, or paid-service solicitations rather than resume critique, [`src/comments.py`](src/comments.py) (`CommentAdviceClassifier`) uses `gemma4:e4b-mlx` with a boolean Pydantic schema (`ResumeAdviceCheck`) to assign `is_relevant = True` exclusively to comments offering actionable feedback on wording, formatting, sections, projects, skills, or role targeting.
-
----
-
-## 4. Exploratory Data Analysis & Corpus Statistics
-
-The final dataset in [`data/final/`](data/final/) comprises two Parquet tables covering **January 1, 2026 – October 31, 2026** (full analysis in [`notebooks/09_exploratory_data_analysis.ipynb`](notebooks/09_exploratory_data_analysis.ipynb)):
-
-- **[`data/final/posts.parquet`](data/final/posts.parquet)** (`3,037 rows × 12 cols`): `created_utc`, `id`, `num_comments`, `score`, `selftext`, `subreddit`, `title`, `url`, `yoe`, `current_role`, `target_role`, `country`.
-- **[`data/final/comments.parquet`](data/final/comments.parquet)** (`8,101 rows × 8 cols`): `id`, `post_id`, `parent_id`, `author`, `body`, `score`, `created_utc`, `is_relevant`.
-
-### 4.1 Temporal Coverage
-Monthly submission volume remains steady across the 10-month window, peaking in January 2026 (446 posts) and September 2026 (350 posts), consistent with seasonal hiring and academic recruiting cycles.
-
-![Monthly Volume of Cleaned Resume Submissions](figures/monthly_post_volume.png)
-
-### 4.2 Experience Distribution
-The corpus is heavily skewed toward early-career applicants: the **25th percentile is `0.0` YoE**, the **median is `2.0` YoE**, the **75th percentile is `4.0` YoE**, and the **mean is `2.72` YoE** (range: `0.0–45.0` YoE).
-
-![Distribution of Applicant Years of Experience](figures/yoe_distribution.png)
-
-### 4.3 Geographic & Work-Mode Distribution
-Submissions are concentrated in North America, South Asia, and Europe, led by the **United States** (1,740 posts, 57.3%), **India** (324, 10.7%), **Canada** (249, 8.2%), **Remote** (144, 4.7%), and the **United Kingdom** (138, 4.5%).
-
-![Top 10 Normalized Locations and Work Modes](figures/top_countries.png)
-
-### 4.4 Occupational Transitions (Current vs. Target Roles)
-Comparing `current_role` against `target_role` highlights the necessity of our `99-*` SOC extension: the #1, #3, and #5 most common current statuses are **Unemployed (`99-1011`, 784 posts)**, **Recent Graduate (`99-2021`, 186)**, and **Enrolled Student (`99-2011`, 155)**. On the target side, **Software Developers (`15-1252`, 680 posts)** and **Data Scientists (`15-2051`, 155)** dominate.
-
-![Standardized Current vs. Target Occupations](figures/top_roles_comparison.png)
-
-### 4.5 Comment Relevance & Feedback Density
-Of the 8,101 non-AutoModerator comments, **4,070 (50.2%)** are classified as actionable resume advice (`is_relevant == True`) and **4,031 (49.8%)** as non-advice. Across the **1,678** posts that received at least one actionable comment, the mean is **2.43** actionable comments per post (median `2.0`, max `17`).
-
-![Comment Relevance Classification and Actionable Comments per Post](figures/comment_relevance_distribution.png)
-
----
-
-## 5. Limitations & Ethical Considerations
-
-- **Platform & Self-Selection Bias**: `r/resumes` skews toward English-speaking, early-career, and technology-oriented job seekers; results should not be treated as a representative sample of the global labor force.
-- **Image-Based Resumes**: Resume content is linked via external `.png`/`.jpeg` image URLs rather than extracted text, meaning downstream resume-parsing models require OCR or vision-language ingestion.
-- **Automated Labeling Noise**: Role standardization (`JobClassifier`) and comment relevance (`CommentAdviceClassifier`) rely on zero-temperature `gemma4:e4b-mlx` inference and may contain occasional misclassifications.
-- **Privacy**: All data is sourced from public Reddit submissions and comments; no private or personally de-anonymized records are included.
-
----
-
-## 6. Reproducibility & Repository Structure
-
-### Repository Layout
-
-```text
-resume_dataset/
-├── .env.example                 # Template for Reddit API credentials
-├── .gitignore
-├── README.md
-├── data/
-│   ├── final/                   # Final cleaned & labeled dataset files
-│   │   ├── posts.parquet
-│   │   └── comments.parquet
-│   ├── raw/                     # Raw scraped Reddit posts and comments
-│   │   ├── subreddit_resumes_posts.parquet
-│   │   └── subreddit_resumes_comments.parquet
-│   ├── intermediate/            # Extracted and normalized lookup tables
-│   │   ├── roles.csv
-│   │   ├── normalized_roles.csv
-│   │   ├── countries.csv
-│   │   ├── normalized_countries.csv
-│   │   └── comment_texts.csv
-│   └── reference/               # Official & amended 2018 SOC taxonomies
-│       ├── soc_structure_2018.xlsx
-│       ├── soc_structure_2018.pdf
-│       └── amended_soc_structure.csv
-├── figures/                     # Publication-ready EDA figures
-├── notebooks/                   # Ordered exploration, development, and EDA notebooks
-│   ├── 01_exploring_subreddits.ipynb
-│   ├── 02_exploring_sample_data.ipynb
-│   ├── 03_developing_country_classifications.ipynb
-│   ├── 04_developing_role_classifications.ipynb
-│   ├── 05_testing_role_classifier.ipynb
-│   ├── 06_finalizing_sample_data.ipynb
-│   ├── 07_extracting_comments.ipynb
-│   ├── 08_exploring_comments.ipynb
-│   └── 09_exploratory_data_analysis.ipynb
-└── src/                         # Modular end-to-end pipeline & classifiers
-    ├── __init__.py
-    ├── classify.py              # LangGraph + Ollama SOC role classifier
-    ├── clean.py                 # Post filtering, extraction, and normalization
-    ├── comments.py              # Comment filtering and advice relevance classifier
-    ├── country.py               # Regex-based country and work-mode normalizer
-    ├── pipeline.py              # End-to-end CLI & Python pipeline runner
-    └── scraper.py               # deepsift wrappers for posts and comments
+# Join actionable resume-advice comments to posts
+advice = comments[comments["is_relevant"]].merge(
+    posts, left_on="post_id", right_on="id", suffixes=("_comment", "_post")
+)
 ```
 
-### Running the Pipeline for Any Time Period
-
+### Run the Pipeline for Any Time Period
 ```bash
 source venv/bin/activate
 
@@ -162,7 +44,144 @@ source venv/bin/activate
 python -m src.pipeline --from-dt 2026-01-01 --to-dt 2026-11-01 --subreddit resumes
 ```
 
-Useful flags:
-- `--skip-scrape` — Re-run cleaning/normalization on existing `data/raw/` parquet files without hitting Reddit.
-- `--skip-comments` — Only produce `posts.parquet`.
-- `--output-dir`, `--raw-dir`, `--intermediate-dir`, `--model` — Override default paths or the Ollama model.
+<details>
+<summary>CLI options & prerequisites</summary>
+
+- **Prerequisites:** Python 3.11+, [Ollama](https://ollama.com/) with `gemma4:e4b-mlx` (for role/comment classification), and Reddit API credentials in `.env` (see [`.env.example`](.env.example), only needed when scraping new data).
+- `--skip-scrape` — Re-run cleaning and normalization on existing `data/raw/` Parquet files.
+- `--skip-comments` — Only output `posts.parquet`.
+- `--output-dir`, `--raw-dir`, `--intermediate-dir`, `--model` — Override default directories or the Ollama model.
+
+</details>
+
+---
+
+## Dataset Overview
+
+The processed dataset lives in [`data/final/`](data/final/) alongside the occupation lookup table in [`data/reference/`](data/reference/):
+
+| File | Shape | Description |
+| :--- | :--- | :--- |
+| [`data/final/posts.parquet`](data/final/posts.parquet) | `3,037 × 12` | Cleaned resume posts with parsed YoE, normalized country, and SOC role codes |
+| [`data/final/comments.parquet`](data/final/comments.parquet) | `8,101 × 8` | Non-AutoModerator comments across 1,941 posts with `is_relevant` advice labels |
+| [`data/reference/amended_soc_structure.csv`](data/reference/amended_soc_structure.csv) | `1,474 × 5` | 2018 U.S. BLS SOC hierarchy extended with custom `99-*` transition/student codes |
+
+<details>
+<summary>Column schemas for posts.parquet and comments.parquet</summary>
+
+#### `posts.parquet`
+| Column | Type | Description |
+| :--- | :--- | :--- |
+| `created_utc` | int64 | Unix timestamp of post creation |
+| `id` | string | Reddit submission ID |
+| `num_comments` | int64 | Total comment count at scrape time |
+| `score` | int64 | Net Reddit upvotes |
+| `selftext` | string | Author-provided post context |
+| `subreddit` | string | Source subreddit (`resumes`) |
+| `title` | string | Original post title |
+| `url` | string | Direct URL to resume image (`.png` or `.jpeg`) |
+| `yoe` | float64 | Parsed years of experience (median: `2.0`, mean: `2.72`, range: `0.0–45.0`) |
+| `current_role` | string | Standardized 2018 SOC (or `99-*`) detailed occupation code |
+| `target_role` | string | Standardized 2018 SOC (or `99-*`) detailed occupation code |
+| `country` | string | Normalized country or work-mode label (e.g., `United States`, `India`, `Remote`) |
+
+#### `comments.parquet`
+| Column | Type | Description |
+| :--- | :--- | :--- |
+| `id` | string | Reddit comment ID |
+| `post_id` | string | Parent submission ID (joins with `posts.id`) |
+| `parent_id` | string | Parent Reddit fullname ID (`t3_*` or `t1_*`) |
+| `author` | string | Commenter username (`AutoModerator` excluded) |
+| `body` | string | Comment text |
+| `score` | int64 | Net Reddit upvotes |
+| `created_utc` | int64 | Unix timestamp of comment creation |
+| `is_relevant` | bool | `True` (4,070) if actionable resume advice; `False` (4,031) otherwise |
+
+</details>
+
+---
+
+## Methodology
+
+### 1. Collection & Filtering Funnel (`20,827 → 3,037` posts)
+Initial subreddit discovery with PRAW identified `r/resumes` (1,328,408 subscribers) for its volume and structured title format. Using `deepsift`, we scraped all posts with `>= 1` comment from Jan 1 to Nov 1, 2026 and applied a 4-stage filter ([`src/clean.py`](src/clean.py)):
+
+| Stage | Filter Criterion | Remaining | Retention |
+| :--- | :--- | ---: | ---: |
+| **Raw Scrape** | `r/resumes`, `num_comments >= 1` | 20,827 | 100.0% |
+| **Valid Body** | Non-empty `selftext`, excluding `[removed]` / `[deleted]` | 9,658 | 46.4% |
+| **Resume Image** | `url` ending in `.png` or `.jpeg` | 9,215 | 44.2% |
+| **Structured Title** | Matches `[X YoE, Current Role, Target Role, Country]` | 8,512 | 40.9% |
+| **Normalized** | Valid numeric `yoe`, `country` `< 26` chars, non-null mappings | **3,037** | **14.6%** |
+
+### 2. Country & Work-Mode Normalization
+[`src/country.py`](src/country.py) normalizes 1,408 unique raw location strings using deterministic regex rules—handling noise phrases, work-mode tags (`Remote`, `Hybrid`, `Global / Anywhere`), relocation arrows (`A -> B`), macro-regions (`Europe / EU`, `APAC`, `LATAM`), and sub-national cities/states.
+
+### 3. Role Standardization (Amended 2018 SOC + LangGraph Classifier)
+Official labor taxonomies omit non-occupational statuses common on resumes. We extended the 2018 U.S. BLS SOC table ([`data/reference/soc_structure_2018.xlsx`](data/reference/soc_structure_2018.xlsx)) with Major Group **`99-0000` (*Non-Occupational and Transition Statuses*)**, adding 13 detailed codes (`99-1011` through `99-5011`) for statuses like *Unemployed*, *Laid Off*, *Enrolled Student*, *Intern*, *Recent Graduate*, *Career Break*, and *Freelancer*.
+
+[`src/classify.py`](src/classify.py) (`JobClassifier`) standardizes 7,784 unique role strings via a 3-node **LangGraph** workflow backed by **Ollama (`gemma4:e4b-mlx`, temperature `0.0`)** with Pydantic `Literal`-constrained outputs (`step1_major` → `step2_detailed` → `step3_lookup`).
+
+### 4. Comment Extraction & Advice Filtering
+We scraped 11,141 non-deleted comments for the filtered posts via `deepsift`, removed `AutoModerator` notices (**8,101** remaining across 1,941 posts), and labeled `is_relevant` in [`src/comments.py`](src/comments.py) using `gemma4:e4b-mlx` to separate actionable resume feedback (**4,070**) from general discussion, questions, or solicitations (**4,031**).
+
+---
+
+## Exploratory Data Analysis
+
+Full analysis and plotting code are available in [`notebooks/09_exploratory_data_analysis.ipynb`](notebooks/09_exploratory_data_analysis.ipynb).
+
+- **Steady Temporal Coverage:** Submissions span Jan–Oct 2026, peaking in January (`446` posts) and September (`350` posts).
+- **Early-Career Skew:** Median experience is **`2.0` YoE** (25th percentile `0.0`, 75th percentile `4.0`, mean `2.72`).
+- **Geographic Concentration:** Top locations are **United States** (`57.3%`), **India** (`10.7%`), **Canada** (`8.2%`), **Remote** (`4.7%`), and **United Kingdom** (`4.5%`).
+- **Role Transitions:** Top current statuses are **Unemployed (`99-1011`, 784)**, **Software Developers (`15-1252`, 307)**, and **Recent Graduate (`99-2021`, 186)**; top target roles are **Software Developers (`15-1252`, 680)** and **Data Scientists (`15-2051`, 155)**.
+- **Feedback Density:** **1,678** posts have at least one actionable advice comment, averaging **`2.43`** actionable comments per post.
+
+| Monthly Submission Volume | Years of Experience Distribution |
+| :---: | :---: |
+| ![Monthly Post Volume](figures/monthly_post_volume.png) | ![YoE Distribution](figures/yoe_distribution.png) |
+
+| Top Locations & Work Modes | Comment Relevance & Density |
+| :---: | :---: |
+| ![Top Countries](figures/top_countries.png) | ![Comment Relevance](figures/comment_relevance_distribution.png) |
+
+![Current vs Target Roles](figures/top_roles_comparison.png)
+
+---
+
+## Repository Structure
+
+```text
+resume_dataset/
+├── .env.example                 # Reddit API credential template
+├── .gitignore
+├── README.md
+├── data/
+│   ├── final/                   # Final cleaned datasets (posts.parquet, comments.parquet)
+│   ├── raw/                     # Raw deepsift scrapes
+│   ├── intermediate/            # Extracted & normalized lookup tables
+│   └── reference/               # Official & amended 2018 SOC taxonomies
+├── figures/                     # EDA charts & Kaggle banner
+├── notebooks/                   # Ordered exploration, development, and EDA notebooks (01–09)
+└── src/                         # Modular scraping, cleaning, and classification pipeline
+    ├── classify.py              # LangGraph + Ollama SOC role classifier
+    ├── clean.py                 # Post filtering, extraction, and normalization
+    ├── comments.py              # Comment filtering and advice relevance classifier
+    ├── country.py               # Regex country & work-mode normalizer
+    ├── pipeline.py              # End-to-end CLI & Python pipeline runner
+    └── scraper.py               # deepsift wrappers
+```
+
+---
+
+## Limitations
+
+- **Platform Bias:** `r/resumes` skews toward English-speaking, early-career, and tech-oriented applicants.
+- **Image-Based Resumes:** Resume content is stored as `.png`/`.jpeg` URLs rather than pre-extracted text (downstream parsing requires OCR or vision-language models).
+- **Automated Labels:** Role codes and `is_relevant` comment labels rely on zero-temperature `gemma4:e4b-mlx` inference and may contain occasional misclassifications.
+
+---
+
+## Author
+
+Created by **Saaketh Kesireddy** — powered by [deepsift](https://github.com/saakethk/deepsift).
